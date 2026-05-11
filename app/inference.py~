@@ -1,0 +1,95 @@
+from scapy.all import sniff, IP, TCP, UDP, ARP, ICMP
+import time
+import numpy as np
+import pandas as pd
+import joblib
+from collections import defaultdict
+
+print("[+] IDS started on Victim VM (44-feature mode)")
+
+scaler = joblib.load("models/scaler.pkl")
+model = joblib.load("models/LightGBM.pkl")
+
+flows = defaultdict(list)
+FLOW_TIMEOUT = 3
+
+def get_flow_id(pkt):
+    if IP not in pkt:
+        return None
+    proto = pkt.proto
+    sport = pkt.sport if TCP in pkt or UDP in pkt else 0
+    dport = pkt.dport if TCP in pkt or UDP in pkt else 0
+    return (pkt[IP].src, pkt[IP].dst, sport, dport, proto)
+
+def init_features():
+    return {
+        "ARP":0,"DHCP":0,"DNS":0,"HTTP":0,"HTTPS":0,"ICMP":0,
+        "IRC":0,"LLC":0,"SMTP":0,"SSH":0,"TCP":0,"UDP":0,
+        "Telnet":0,"IPv":1,
+
+        "pkt_sizes":[],
+        "times":[],
+
+        "syn_count":0,"ack_count":0,"fin_count":0,"rst_count":0,
+        "syn_flag_number":0,"ack_flag_number":0,"fin_flag_number":0,
+        "rst_flag_number":0,"psh_flag_number":0,
+        "cwr_flag_number":0,"ece_flag_number":0
+    }
+
+flow_features = defaultdict(init_features)
+
+def update_features(pkt, f):
+    f["pkt_sizes"].append(len(pkt))
+    f["times"].append(pkt.time)
+
+    if ARP in pkt: f["ARP"]=1
+    if ICMP in pkt: f["ICMP"]=1
+    if TCP in pkt:
+        f["TCP"]=1
+        flags = pkt[TCP].flags
+        if flags & 0x02: f["syn_count"] += 1
+        if flags & 0x10: f["ack_count"] += 1
+        if flags & 0x01: f["fin_count"] += 1
+        if flags & 0x04: f["rst_count"] += 1
+    if UDP in pkt:
+        f["UDP"]=1
+
+def finalize_features(f):
+    sizes = np.array(f["pkt_sizes"])
+    times = np.array(f["times"])
+
+    duration = times.max() - times.min() if len(times)>1 else 0
+    rate = len(sizes) / (duration+1e-6)
+
+    return {
+        "Duration":duration,
+        "Min":sizes.min(),
+        "Max":sizes.max(),
+        "AVG":sizes.mean(),
+        "Std":sizes.std(),
+        "Variance":sizes.var(),
+        "Tot size":sizes.sum(),
+        "Number":len(sizes),
+        "Rate":rate,
+        **{k:v for k,v in f.items() if isinstance(v,int)}
+    }
+
+def process_packet(pkt):
+    fid = get_flow_id(pkt)
+    if fid is None:
+        return
+
+    update_features(pkt, flow_features[fid])
+
+    if time.time() - flow_features[fid]["times"][0] > FLOW_TIMEOUT:
+        feat = finalize_features(flow_features[fid])
+        df = pd.DataFrame([feat])
+        df = df[scaler.feature_names_in_]
+
+        X = scaler.transform(df)
+        pred = model.predict(X)
+
+        print("[ALERT]" if pred[0]==1 else "[OK]", feat)
+        del flow_features[fid]
+
+sniff(iface="eth0", prn=process_packet, store=False)

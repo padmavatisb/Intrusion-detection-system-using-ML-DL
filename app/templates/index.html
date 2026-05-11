@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Live IDS Dashboard</title>
+
+  <!-- Socket.IO -->
+  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body {
+      background: #0f172a;
+      color: white;
+      font-family: Arial;
+      margin: 20px;
+    }
+
+    h2 {
+      text-align: center;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+
+    th, td {
+      border: 1px solid #334155;
+      padding: 10px;
+      text-align: center;
+    }
+
+    th {
+      background: #1e293b;
+    }
+
+    .controls {
+      margin: 20px 0;
+      text-align: center;
+    }
+
+    button {
+      padding: 8px;
+      margin: 5px;
+      cursor: pointer;
+    }
+
+    /* Popup */
+    #pieModal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.7);
+      justify-content: center;
+      align-items: center;
+    }
+
+    #pieBox {
+      background: white;
+      padding: 20px;
+      border-radius: 10px;
+      width: 500px;
+    }
+  </style>
+</head>
+
+<body>
+
+<h2>🚨 Live Intrusion Detection Dashboard</h2>
+
+<div class="controls">
+  <button onclick="showPiePopup()">📊 Show Attack Distribution</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Source IP</th>
+      <th>Attack</th>
+      <th>Reason</th>
+      <th>Detected In</th>
+    </tr>
+  </thead>
+  <tbody id="logs"></tbody>
+</table>
+
+<!-- Popup -->
+<div id="pieModal">
+  <div id="pieBox">
+    <button onclick="closePie()" style="float:right;">❌</button>
+    <h3 style="color:black; text-align:center;">Attack Distribution</h3>
+    <canvas id="pieChart"></canvas>
+  </div>
+</div>
+
+<script>
+const socket = io();
+let logs = [];
+let pieChart;
+
+// ================= RISK COLOR LOGIC =================
+function getRiskLevel(attack) {
+  attack = attack.toLowerCase();
+
+  const high = ["tcp flood", "udp flood", "icmp flood", "syn flood"];
+  const medium = ["port scanning", "dns flood", "ssh brute force", "http flood"];
+
+  if (high.includes(attack)) return "high";
+  if (medium.includes(attack)) return "medium";
+  return "low";
+}
+
+function getColor(risk) {
+  if (risk === "high") return "#dc2626";   // RED
+  if (risk === "medium") return "#f59e0b"; // ORANGE
+  return "#16a34a";                        // GREEN
+}
+
+// ================= RECEIVE DATA =================
+socket.on("update_dashboard", function(data) {
+  logs.push(data);
+  renderTable();
+});
+
+// ================= TABLE =================
+function renderTable() {
+  let html = "";
+
+  logs.slice().reverse().forEach(d => {
+
+    const risk = getRiskLevel(d.attack);
+    const color = getColor(risk);
+
+    html += `
+      <tr style="background:${color}; color:white;">
+        <td>${d.timestamp}</td>
+        <td>${d.src}</td>
+        <td>${d.attack}</td>
+        <td>${d.reason}</td>
+        <td>${d.time}</td>
+      </tr>`;
+  });
+
+  document.getElementById("logs").innerHTML = html;
+}
+
+// ================= PIE POPUP =================
+function showPiePopup() {
+
+  document.getElementById("pieModal").style.display = "flex";
+
+  const counts = {};
+  logs.forEach(d => {
+    counts[d.attack] = (counts[d.attack] || 0) + 1;
+  });
+
+  if (pieChart) pieChart.destroy();
+
+  pieChart = new Chart(document.getElementById("pieChart"), {
+    type: "pie",
+    data: {
+      labels: Object.keys(counts),
+      datasets: [{
+        data: Object.values(counts)
+      }]
+    }
+  });
+}
+
+// ================= CLOSE =================
+function closePie() {
+  document.getElementById("pieModal").style.display = "none";
+}
+</script>
+
+</body>
+</html>
